@@ -65,7 +65,7 @@ changelog:
 
 release:
   github:
-    owner: your-github-username
-    name: twitch-monitor
+    owner: Katrovsky
+    name: twitch2tg-bot
   draft: false
   prerelease: auto
