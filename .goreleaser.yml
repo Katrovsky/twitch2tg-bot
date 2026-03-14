@@ -21,6 +21,8 @@ builds:
     goarch:
       - amd64
       - arm64
+    ignore:
+      - goarch: "386"
 
 archives:
   - format: tar.gz
@@ -28,7 +30,7 @@ archives:
       - goos: windows
         format: zip
     name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
-    
+
 changelog:
   sort: asc
   filters:
