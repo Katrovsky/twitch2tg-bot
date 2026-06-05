@@ -152,7 +152,7 @@ func getMaxViewers(history []ViewerDataPoint) int {
 		return 0
 	}
 	max := history[0].Count
-	for _, p := range history {
+	for _, p := range history[1:] {
 		if p.Count > max {
 			max = p.Count
 		}
