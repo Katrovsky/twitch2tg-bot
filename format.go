@@ -59,70 +59,58 @@ func viewerTrend(history []ViewerDataPoint, loc Localization) string {
 	}
 }
 
-func formatStartMessage(info *StreamInfo, loc Localization) string {
+func formatMessage(info *StreamInfo, history []ViewerDataPoint, avgViewers int, clips []ClipInfo, loc Localization) string {
 	var b strings.Builder
 
-	line := fmt.Sprintf("<b>%s</b> • %s", escapeHTML(info.Channel), loc.StartedStreaming)
+	statusLabel := loc.IsLive
+	if history == nil {
+		statusLabel = loc.StartedStreaming
+	}
+
+	line := fmt.Sprintf("<b>%s</b> • %s", escapeHTML(info.Channel), statusLabel)
 	if info.Game != "" {
 		line += fmt.Sprintf(" • %s", escapeHTML(info.Game))
 	}
-	b.WriteString(line + "\n\n")
+	b.WriteString(line)
+	b.WriteString("\n\n")
 
 	if info.Title != "" {
-		b.WriteString(fmt.Sprintf("<i>%s</i>", escapeHTML(info.Title)))
+		if history == nil {
+			fmt.Fprintf(&b, "<i>%s</i>", escapeHTML(info.Title))
+		} else {
+			fmt.Fprintf(&b, "<i>%s</i>\n\n", escapeHTML(info.Title))
+		}
+	}
+
+	if history != nil {
+		var stats []string
+		if info.Uptime != "" {
+			stats = append(stats, info.Uptime)
+		}
+		if info.Viewers > 0 {
+			v := fmt.Sprintf("%s %s", formatViewers(info.Viewers), loc.Viewers)
+			if avgViewers > 0 && avgViewers != info.Viewers {
+				v += fmt.Sprintf(", %s %s", formatViewers(avgViewers), loc.Avg)
+			}
+			if trend := viewerTrend(history, loc); trend != "" {
+				v += " · " + trend
+			}
+			stats = append(stats, v)
+		}
+		b.WriteString(strings.Join(stats, " · "))
+
+		if c := formatClips(clips); c != "" {
+			b.WriteString("\n\n")
+			b.WriteString(c)
+		}
 	}
 
 	if tags := formatTags(info.Tags); tags != "" {
-		b.WriteString("\n\n" + tags)
+		b.WriteString("\n\n")
+		b.WriteString(tags)
 	}
 
 	return b.String()
-}
-
-func formatUpdateMessage(info *StreamInfo, avgViewers int, history []ViewerDataPoint, loc Localization) string {
-	var b strings.Builder
-
-	line := fmt.Sprintf("<b>%s</b> • %s", escapeHTML(info.Channel), loc.IsLive)
-	if info.Game != "" {
-		line += fmt.Sprintf(" • %s", escapeHTML(info.Game))
-	}
-	b.WriteString(line + "\n\n")
-
-	if info.Title != "" {
-		b.WriteString(fmt.Sprintf("<i>%s</i>\n\n", escapeHTML(info.Title)))
-	}
-
-	var stats []string
-	if info.Uptime != "" {
-		stats = append(stats, info.Uptime)
-	}
-	if info.Viewers > 0 {
-		v := fmt.Sprintf("%s %s", formatViewers(info.Viewers), loc.Viewers)
-		if avgViewers > 0 && avgViewers != info.Viewers {
-			v += fmt.Sprintf(", %s %s", formatViewers(avgViewers), loc.Avg)
-		}
-		if trend := viewerTrend(history, loc); trend != "" {
-			v += " · " + trend
-		}
-		stats = append(stats, v)
-	}
-
-	b.WriteString(strings.Join(stats, " · "))
-
-	return b.String()
-}
-
-func formatUpdateMessageWithClips(info *StreamInfo, avgViewers int, history []ViewerDataPoint, clips []ClipInfo, loc Localization) string {
-	msg := formatUpdateMessage(info, avgViewers, history, loc)
-
-	if c := formatClips(clips); c != "" {
-		msg += "\n\n" + c
-	}
-	if tags := formatTags(info.Tags); tags != "" {
-		msg += "\n\n" + tags
-	}
-
-	return msg
 }
 
 func formatEndMessage(channel, duration string, avgViewers, maxViewers int, game, title string, tags []string, clips []ClipInfo, loc Localization) string {
@@ -132,10 +120,11 @@ func formatEndMessage(channel, duration string, avgViewers, maxViewers int, game
 	if game != "" {
 		line += fmt.Sprintf(" • %s", escapeHTML(game))
 	}
-	b.WriteString(line + "\n\n")
+	b.WriteString(line)
+	b.WriteString("\n\n")
 
 	if title != "" {
-		b.WriteString(fmt.Sprintf("<i>%s</i>\n\n", escapeHTML(title)))
+		fmt.Fprintf(&b, "<i>%s</i>\n\n", escapeHTML(title))
 	}
 
 	var stats []string
@@ -156,10 +145,12 @@ func formatEndMessage(channel, duration string, avgViewers, maxViewers int, game
 	b.WriteString(strings.Join(stats, " · "))
 
 	if c := formatClips(clips); c != "" {
-		b.WriteString("\n\n" + c)
+		b.WriteString("\n\n")
+		b.WriteString(c)
 	}
 	if hashtags := formatTags(tags); hashtags != "" {
-		b.WriteString("\n\n" + hashtags)
+		b.WriteString("\n\n")
+		b.WriteString(hashtags)
 	}
 
 	return b.String()
