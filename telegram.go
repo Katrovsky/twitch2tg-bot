@@ -20,8 +20,7 @@ type TelegramResponse struct {
 	Result json.RawMessage `json:"result"`
 }
 
-func sendPhotoMessage(token string, chatID int64, threadID *int, photoURL, caption, buttonURL, buttonText string) (int, error) {
-	ctx := context.Background()
+func sendPhotoMessage(ctx context.Context, token string, chatID int64, threadID *int, photoURL, caption, buttonURL, buttonText string) (int, error) {
 	imageData, err := downloadImage(ctx, photoURL)
 	if err != nil {
 		return 0, fmt.Errorf("failed to download image: %w", err)
@@ -38,8 +37,7 @@ func sendPhotoMessage(token string, chatID int64, threadID *int, photoURL, capti
 		writer.WriteField("message_thread_id", fmt.Sprintf("%d", *threadID))
 	}
 	if buttonURL != "" {
-		keyboard := buildKeyboard(buttonText, buttonURL)
-		kb, _ := json.Marshal(keyboard)
+		kb, _ := json.Marshal(buildKeyboard(buttonText, buttonURL))
 		writer.WriteField("reply_markup", string(kb))
 	}
 
@@ -48,7 +46,10 @@ func sendPhotoMessage(token string, chatID int64, threadID *int, photoURL, capti
 	writer.Close()
 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", token)
-	req, _ := http.NewRequest("POST", url, &body)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, &body)
+	if err != nil {
+		return 0, err
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := httpClient.Do(req)
@@ -71,8 +72,7 @@ func sendPhotoMessage(token string, chatID int64, threadID *int, photoURL, capti
 	return msg.MessageID, nil
 }
 
-func editPhotoMessage(token string, chatID int64, messageID int, photoURL, caption, buttonURL, buttonText string) error {
-	ctx := context.Background()
+func editPhotoMessage(ctx context.Context, token string, chatID int64, messageID int, photoURL, caption, buttonURL, buttonText string) error {
 	imageData, err := downloadImage(ctx, photoURL)
 	if err != nil {
 		return fmt.Errorf("failed to download image: %w", err)
@@ -108,7 +108,10 @@ func editPhotoMessage(token string, chatID int64, messageID int, photoURL, capti
 	writer.Close()
 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/editMessageMedia", token)
-	req, _ := http.NewRequest("POST", url, &body)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, &body)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := httpClient.Do(req)
@@ -124,7 +127,7 @@ func editPhotoMessage(token string, chatID int64, messageID int, photoURL, capti
 	return nil
 }
 
-func editMessageCaption(token string, chatID int64, messageID int, caption, buttonURL, buttonText string) error {
+func editMessageCaption(ctx context.Context, token string, chatID int64, messageID int, caption, buttonURL, buttonText string) error {
 	payload := map[string]any{
 		"chat_id":    chatID,
 		"message_id": messageID,
@@ -135,10 +138,19 @@ func editMessageCaption(token string, chatID int64, messageID int, caption, butt
 		payload["reply_markup"] = buildKeyboard(buttonText, buttonURL)
 	}
 
-	jsonData, _ := json.Marshal(payload)
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/editMessageCaption", token)
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
 
-	resp, err := httpClient.Post(url, "application/json", strings.NewReader(string(jsonData)))
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/editMessageCaption", token)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -147,6 +159,52 @@ func editMessageCaption(token string, chatID int64, messageID int, caption, butt
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("telegram API error: %s", string(respBody))
+	}
+	return nil
+}
+
+func checkBotPermissions(ctx context.Context, token string, chatID int64) error {
+	botID := getBotUserID(ctx, token)
+
+	payload, _ := json.Marshal(map[string]any{
+		"chat_id": chatID,
+		"user_id": botID,
+	})
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getChatMember", token)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(payload)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Ok     bool `json:"ok"`
+		Result struct {
+			Status          string `json:"status"`
+			CanPostMessages *bool  `json:"can_post_messages"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	if !result.Ok {
+		return fmt.Errorf("failed to get bot permissions")
+	}
+
+	status := result.Result.Status
+	if status != "administrator" && status != "creator" {
+		return fmt.Errorf("bot needs administrator role (current: %s)", status)
+	}
+	if result.Result.CanPostMessages != nil && !*result.Result.CanPostMessages {
+		return fmt.Errorf("bot needs permission to send messages")
 	}
 	return nil
 }
