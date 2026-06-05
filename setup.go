@@ -436,49 +436,6 @@ func waitForSetupCommand(ctx context.Context, token string, timeoutSeconds int) 
 	return 0, nil, fmt.Errorf("timeout waiting for SETUP command")
 }
 
-func checkBotPermissions(ctx context.Context, token string, chatID int64) error {
-	botID := getBotUserID(ctx, token)
-
-	payload, _ := json.Marshal(map[string]any{
-		"chat_id": chatID,
-		"user_id": botID,
-	})
-
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/getChatMember", token)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(payload)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Ok     bool `json:"ok"`
-		Result struct {
-			Status          string `json:"status"`
-			CanPostMessages *bool  `json:"can_post_messages"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return err
-	}
-	if !result.Ok {
-		return fmt.Errorf("failed to get bot permissions")
-	}
-	if result.Result.Status != "administrator" && result.Result.Status != "creator" {
-		if result.Result.CanPostMessages == nil || !*result.Result.CanPostMessages {
-			return fmt.Errorf("bot needs permission to send messages")
-		}
-	}
-	return nil
-}
-
 func getBotUserID(ctx context.Context, token string) int64 {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
