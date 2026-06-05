@@ -12,24 +12,25 @@ func retryWithBackoff(ctx context.Context, operation func() error, operationName
 	delays := []int{1, 3, 5, 10, 15, 30, 45, 60}
 
 	for _, delay := range delays {
-		if err := operation(); err == nil {
+		err := operation()
+		if err == nil {
 			return nil
 		}
-
+		slog.Warn("operation failed, retrying", "name", operationName, "error", err, "next_in", delay)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(time.Duration(delay) * time.Second):
-			slog.Warn("retrying operation", "name", operationName, "next_in", delay)
 		}
 	}
 
 	for {
-		if err := operation(); err == nil {
+		err := operation()
+		if err == nil {
 			slog.Info("operation recovered", "name", operationName)
 			return nil
 		}
-		slog.Warn("operation still failing", "name", operationName)
+		slog.Warn("operation still failing", "name", operationName, "error", err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -48,7 +49,11 @@ func monitorLoop(ctx context.Context, cfg *Config) {
 	loc := getLocalization(cfg.Language)
 	var session *StreamSession
 	checksPerUpdate := (cfg.UpdateInterval * 60) / cfg.CheckInterval
-	lastWasLive := false
+
+	broadcasterID, err := getBroadcasterID(ctx, cfg.Twitch.Channel, cfg.Twitch.ClientID, cfg.Twitch.ClientSecret)
+	if err != nil {
+		slog.Error("failed to get broadcaster ID at startup", "error", err)
+	}
 
 	for {
 		select {
@@ -59,54 +64,42 @@ func monitorLoop(ctx context.Context, cfg *Config) {
 		}
 
 		var info *StreamInfo
-		var err error
 
 		if fileExists("simulate_end") {
 			slog.Info("simulate_end trigger detected")
 			os.Remove("simulate_end")
-			if session != nil {
-				info = nil
-				err = fmt.Errorf("simulated end")
-			}
 		} else {
+			var err error
 			info, err = getStreamInfo(ctx, cfg.Twitch.Channel, cfg.Twitch.ClientID, cfg.Twitch.ClientSecret, cfg.Language)
-		}
-
-		if err != nil {
-			slog.Error("stream status check failed", "error", err)
-			sleep(ctx, time.Duration(cfg.CheckInterval)*time.Second)
-			continue
-		}
-
-		isLive := info != nil
-
-		if isLive != lastWasLive {
-			if isLive {
-				slog.Info("stream came online", "viewers", info.Viewers, "game", info.Game)
-			} else {
-				slog.Info("stream went offline")
-			}
-			lastWasLive = isLive
-		}
-
-		if isLive && session == nil {
-			slog.Info("stream started", "channel", cfg.Twitch.Channel)
-
-			broadcasterID, err := getBroadcasterID(ctx, cfg.Twitch.Channel, cfg.Twitch.ClientID, cfg.Twitch.ClientSecret)
 			if err != nil {
-				slog.Error("failed to get broadcaster ID", "error", err)
+				slog.Error("stream status check failed", "error", err)
 				sleep(ctx, time.Duration(cfg.CheckInterval)*time.Second)
 				continue
 			}
+		}
+
+		switch {
+		case info != nil && session == nil:
+			slog.Info("stream started", "channel", cfg.Twitch.Channel, "viewers", info.Viewers, "game", info.Game)
+
+			if broadcasterID == "" {
+				broadcasterID, err = getBroadcasterID(ctx, cfg.Twitch.Channel, cfg.Twitch.ClientID, cfg.Twitch.ClientSecret)
+				if err != nil {
+					slog.Error("failed to get broadcaster ID", "error", err)
+					sleep(ctx, time.Duration(cfg.CheckInterval)*time.Second)
+					continue
+				}
+			}
 
 			thumbnailURL := getThumbnailURL(cfg.Twitch.Channel)
-			message := formatStartMessage(info, loc)
+			message := formatMessage(info, nil, 0, nil, loc)
 			dataPoint := ViewerDataPoint{Timestamp: time.Now(), Count: info.Viewers}
 
 			var messageID int
 			retryWithBackoff(ctx, func() error {
 				var sendErr error
 				messageID, sendErr = sendPhotoMessage(
+					ctx,
 					cfg.Telegram.BotToken, *cfg.Telegram.ChatID, cfg.Telegram.ThreadID,
 					thumbnailURL, message, info.URL, loc.ButtonText,
 				)
@@ -126,7 +119,7 @@ func monitorLoop(ctx context.Context, cfg *Config) {
 				}
 			}
 
-		} else if isLive && session != nil {
+		case info != nil && session != nil:
 			session.ViewerHistory = append(session.ViewerHistory, ViewerDataPoint{
 				Timestamp: time.Now(), Count: info.Viewers,
 			})
@@ -141,12 +134,12 @@ func monitorLoop(ctx context.Context, cfg *Config) {
 
 				avgViewers := calculateAverage(session.ViewerHistory)
 				thumbnailURL := getThumbnailURL(cfg.Twitch.Channel)
-
 				clips, _ := getRecentClips(ctx, session.BroadcasterID, cfg.Twitch.ClientID, cfg.Twitch.ClientSecret, session.StartTime)
-				message := formatUpdateMessageWithClips(info, avgViewers, session.ViewerHistory, clips, loc)
+				message := formatMessage(info, session.ViewerHistory, avgViewers, clips, loc)
 
 				retryWithBackoff(ctx, func() error {
 					return editPhotoMessage(
+						ctx,
 						cfg.Telegram.BotToken, *cfg.Telegram.ChatID, session.MessageID,
 						thumbnailURL, message, info.URL, loc.ButtonText,
 					)
@@ -159,7 +152,7 @@ func monitorLoop(ctx context.Context, cfg *Config) {
 				session.Tags = info.Tags
 			}
 
-		} else if !isLive && session != nil {
+		case info == nil && session != nil:
 			slog.Info("stream ended", "channel", cfg.Twitch.Channel)
 
 			duration := time.Since(session.StartTime)
@@ -179,6 +172,7 @@ func monitorLoop(ctx context.Context, cfg *Config) {
 
 			retryWithBackoff(ctx, func() error {
 				return editMessageCaption(
+					ctx,
 					cfg.Telegram.BotToken, *cfg.Telegram.ChatID, session.MessageID,
 					message, streamURL, loc.ButtonText,
 				)
